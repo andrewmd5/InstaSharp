@@ -28,7 +28,8 @@ namespace InstaSharpExample
             uploader.OnMediaConfigureStarted += OnMediaConfigureStarted;
             uploader.OnMediaUploadStartedEvent += OnMediaUploadStartedEvent;
             uploader.OnMediaUploadeComplete += OnmediaUploadCompleteEvent;
-            uploader.UploadImage(@"D:\Pictures\0ra0z4K.jpg", "#helloworld", true);
+            uploader.UploadImage(@"PathToImage", "#helloworld", true);
+            Console.WriteLine("Your DeviceID is " + InstaSharp.Properties.Settings.Default.deviceId);
             Console.Read();
         }
 

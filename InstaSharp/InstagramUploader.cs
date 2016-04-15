@@ -85,8 +85,22 @@ namespace InstaSharp
             }
             try
             {
-                var guid = GenerateGuid();
-                var deviceId = $"android-{guid}";
+                string guid;
+                string deviceId;
+                //save our device/guid so we look like we're always uploading from the same phone
+                if (!string.IsNullOrEmpty(Properties.Settings.Default.deviceId))
+                {
+                    guid = Properties.Settings.Default.guid;
+                    deviceId = Properties.Settings.Default.deviceId;
+                }
+                else
+                {
+                    guid = GenerateGuid();
+                    deviceId = $"android-{guid}";
+                    Properties.Settings.Default.deviceId = deviceId;
+                    Properties.Settings.Default.guid = guid;
+                    Properties.Settings.Default.Save();
+                }
                 var data = new Dictionary<string, string>
                 {
                     {"device_id", deviceId},
@@ -192,24 +206,37 @@ namespace InstaSharp
                                             try
                                             {
                                                 var configureJson = JObject.Parse(configureResults);
-                                                var uploadedResponse = new UploadResponse
+                                                var configureStatus = (string) configureJson["status"];
+                                                if (configureStatus.Equals("fail"))
                                                 {
-                                                    Images = new List<UploadResponse.InstagramMedia>()
-                                                };
-                                                foreach (
-                                                    var media in
-                                                        configureJson["media"]["image_versions2"]["candidates"].Select(
-                                                            x => JObject.Parse(x.ToString()))
-                                                            .Select(mediaJson => new UploadResponse.InstagramMedia
-                                                            {
-                                                                Url = (string) mediaJson["url"],
-                                                                Width = (int) mediaJson["width"],
-                                                                Height = (int) mediaJson["height"]
-                                                            }))
-                                                {
-                                                    uploadedResponse.Images.Add(media);
+                                                    ErrorEvent?.Invoke(this,
+                                                        new ErrorResponse
+                                                        {
+                                                            Status = "fail",
+                                                            Message = (string) configureJson["message"]
+                                                        });
                                                 }
-                                                OnCompleteEvent?.Invoke(this, uploadedResponse);
+                                                else if (configureStatus.Equals("ok"))
+                                                {
+                                                    var uploadedResponse = new UploadResponse
+                                                    {
+                                                        Images = new List<UploadResponse.InstagramMedia>()
+                                                    };
+                                                    foreach (
+                                                        var media in
+                                                            configureJson["media"]["image_versions2"]["candidates"].Select(
+                                                                x => JObject.Parse(x.ToString()))
+                                                                .Select(mediaJson => new UploadResponse.InstagramMedia
+                                                                {
+                                                                    Url = (string)mediaJson["url"],
+                                                                    Width = (int)mediaJson["width"],
+                                                                    Height = (int)mediaJson["height"]
+                                                                }))
+                                                    {
+                                                        uploadedResponse.Images.Add(media);
+                                                    }
+                                                    OnCompleteEvent?.Invoke(this, uploadedResponse);
+                                                }
                                             }
                                             catch (Exception ex)
                                             {
