@@ -1,4 +1,6 @@
-﻿using System;
+﻿#region
+
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -11,8 +13,11 @@ using System.Text.RegularExpressions;
 using System.Web;
 using System.Web.Script.Serialization;
 using InstaSharp.Models;
+using InstaSharp.Properties;
 using InstaSharp.Utilities;
 using Newtonsoft.Json.Linq;
+
+#endregion
 
 namespace InstaSharp
 {
@@ -24,7 +29,7 @@ namespace InstaSharp
             "Instagram 6.21.2 Android (19/4.4.2; 480dpi; 1152x1920; Meizu; MX4; mx4; mt6595; en_US)";
 
         private readonly string _username;
-        private readonly InstagramApi instagramApi = new InstagramApi();
+
 
         private readonly string instagramSignature = "25eace5393646842f0d0c3fb2ac7d3cfa15c052436ee86b5406a8433f54d24a5";
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
@@ -79,6 +84,7 @@ namespace InstaSharp
 
         public void UploadImage(string imagePath, string caption, bool crop = false, bool withBorder = false)
         {
+            var instagramApi = new InstagramApi();
             if (crop)
             {
                 imagePath = Crop(imagePath, withBorder);
@@ -88,18 +94,18 @@ namespace InstaSharp
                 string guid;
                 string deviceId;
                 //save our device/guid so we look like we're always uploading from the same phone
-                if (!string.IsNullOrEmpty(Properties.Settings.Default.deviceId))
+                if (!string.IsNullOrEmpty(Settings.Default.deviceId))
                 {
-                    guid = Properties.Settings.Default.guid;
-                    deviceId = Properties.Settings.Default.deviceId;
+                    guid = Settings.Default.guid;
+                    deviceId = Settings.Default.deviceId;
                 }
                 else
                 {
                     guid = GenerateGuid();
                     deviceId = $"android-{guid}";
-                    Properties.Settings.Default.deviceId = deviceId;
-                    Properties.Settings.Default.guid = guid;
-                    Properties.Settings.Default.Save();
+                    Settings.Default.deviceId = deviceId;
+                    Settings.Default.guid = guid;
+                    Settings.Default.Save();
                 }
                 var data = new Dictionary<string, string>
                 {
@@ -123,169 +129,166 @@ namespace InstaSharp
                             Status = "fail",
                             Message = "Empty response received from the server while trying to login"
                         });
+                    return;
                 }
-                else
+                try
                 {
-                    try
+                    var loginJson = JObject.Parse(loginResponse);
+                    var status = (string) loginJson["status"];
+                    if (status.Equals("ok"))
                     {
-                        var loginJson = JObject.Parse(loginResponse);
-                        var status = (string) loginJson["status"];
-                        if (status.Equals("ok"))
+                        var username = (string) loginJson["logged_in_user"]["username"];
+                        var hasAnonymousProfilePicture =
+                            (bool) loginJson["logged_in_user"]["has_anonymous_profile_picture"];
+                        var profilePicUrl = (string) loginJson["logged_in_user"]["profile_pic_url"];
+                        var fullName = (string) loginJson["logged_in_user"]["full_name"];
+                        var isPrivate = (bool) loginJson["logged_in_user"]["is_private"];
+                        SuccessfulLoginEvent?.Invoke(this,
+                            new LoggedInUserResponse
+                            {
+                                Username = username,
+                                HasAnonymousProfilePicture = hasAnonymousProfilePicture,
+                                ProfilePicUrl = profilePicUrl,
+                                FullName = fullName,
+                                IsPrivate = isPrivate
+                            });
+                        OnMediaUploadStartedEvent?.Invoke(this, EventArgs.Empty);
+                        var uploadResponse = instagramApi.PostImage(imagePath, _userAgent);
+                        if (string.IsNullOrEmpty(uploadResponse))
                         {
-                            var username = (string) loginJson["logged_in_user"]["username"];
-                            var hasAnonymousProfilePicture =
-                                (bool) loginJson["logged_in_user"]["has_anonymous_profile_picture"];
-                            var profilePicUrl = (string) loginJson["logged_in_user"]["profile_pic_url"];
-                            var fullName = (string) loginJson["logged_in_user"]["full_name"];
-                            var isPrivate = (bool) loginJson["logged_in_user"]["is_private"];
-                            SuccessfulLoginEvent?.Invoke(this,
-                                new LoggedInUserResponse
+                            ErrorEvent?.Invoke(this,
+                                new ErrorResponse
                                 {
-                                    Username = username,
-                                    HasAnonymousProfilePicture = hasAnonymousProfilePicture,
-                                    ProfilePicUrl = profilePicUrl,
-                                    FullName = fullName,
-                                    IsPrivate = isPrivate
+                                    Status = "fail",
+                                    Message =
+                                        "Empty response received from the server while trying to post the image"
                                 });
-                            OnMediaUploadStartedEvent?.Invoke(this, EventArgs.Empty);
-                            var uploadResponse = instagramApi.PostImage(imagePath, _userAgent);
-                            if (string.IsNullOrEmpty(uploadResponse))
+                            return;
+                        }
+                        try
+                        {
+                            var uploadJson = JObject.Parse(uploadResponse);
+                            var uploadStatus = (string) uploadJson["status"];
+                            if (uploadStatus.Equals("ok"))
+                            {
+                                OnMediaUploadeComplete?.Invoke(this, EventArgs.Empty);
+                                OnMediaConfigureStarted?.Invoke(this, EventArgs.Empty);
+                                var newLineStripper = new Regex(@"/\r|\n/", RegexOptions.IgnoreCase);
+                                //...
+                                caption = newLineStripper.Replace(caption, "");
+                                var mediaId = (string) uploadJson["media_id"];
+                                var configureData = new Dictionary<string, string>
+                                {
+                                    {"device_id", deviceId},
+                                    {"guid", guid},
+                                    {"media_id", mediaId},
+                                    {"caption", caption.Trim()},
+                                    {"device_timestamp", StringUtilities.GenerateTimeStamp()},
+                                    {"source_type", "5"},
+                                    {"filter_type", "0"},
+                                    {"extra", "{}"},
+                                    {"Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"}
+                                };
+                                var configureDataString = serializer.Serialize(configureData);
+                                var configureSignature = GenerateSignature(configureDataString);
+                                var signedConfigureBody =
+                                    $"signed_body={configureSignature}.{HttpUtility.UrlEncode(configureDataString)}&ig_sig_key_version=4";
+                                var configureResults = instagramApi.PostData("media/configure/",
+                                    signedConfigureBody, _userAgent);
+                                if (string.IsNullOrEmpty(configureResults))
+                                {
+                                    ErrorEvent?.Invoke(this,
+                                        new ErrorResponse
+                                        {
+                                            Status = "fail",
+                                            Message =
+                                                "Empty response received from the server while trying to configure the image"
+                                        });
+                                    return;
+                                }
+
+                                try
+                                {
+                                    var configureJson = JObject.Parse(configureResults);
+                                    var configureStatus = (string) configureJson["status"];
+                                    if (configureStatus.Equals("fail"))
+                                    {
+                                        ErrorEvent?.Invoke(this,
+                                            new ErrorResponse
+                                            {
+                                                Status = "fail",
+                                                Message = (string) configureJson["message"]
+                                            });
+                                    }
+                                    else if (configureStatus.Equals("ok"))
+                                    {
+                                        var uploadedResponse = new UploadResponse
+                                        {
+                                            Images = new List<UploadResponse.InstagramMedia>()
+                                        };
+                                        foreach (
+                                            var media in
+                                                configureJson["media"]["image_versions2"]["candidates"].Select(
+                                                    x => JObject.Parse(x.ToString()))
+                                                    .Select(mediaJson => new UploadResponse.InstagramMedia
+                                                    {
+                                                        Url = (string) mediaJson["url"],
+                                                        Width = (int) mediaJson["width"],
+                                                        Height = (int) mediaJson["height"]
+                                                    }))
+                                        {
+                                            uploadedResponse.Images.Add(media);
+                                        }
+                                        OnCompleteEvent?.Invoke(this, uploadedResponse);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    ErrorEvent?.Invoke(this,
+                                        new ErrorResponse
+                                        {
+                                            Status = "fail",
+                                            Message = "Could not decode the configure response"
+                                        });
+                                }
+                            }
+
+                            else
                             {
                                 ErrorEvent?.Invoke(this,
                                     new ErrorResponse
                                     {
                                         Status = "fail",
                                         Message =
-                                            "Empty response received from the server while trying to post the image"
+                                            (string) uploadJson["message"]
                                     });
                             }
-                            else
-                            {
-                                try
-                                {
-                                    var uploadJson = JObject.Parse(uploadResponse);
-                                    var uploadStatus = (string) uploadJson["status"];
-                                    if (uploadStatus.Equals("ok"))
-                                    {
-                                        OnMediaUploadeComplete?.Invoke(this, EventArgs.Empty);
-                                        OnMediaConfigureStarted?.Invoke(this, EventArgs.Empty);
-                                        var newLineStripper = new Regex(@"/\r|\n/", RegexOptions.IgnoreCase);
-                                        //...
-                                        caption = newLineStripper.Replace(caption, "");
-                                        var mediaId = (string) uploadJson["media_id"];
-                                        var configureData = new Dictionary<string, string>
-                                        {
-                                            {"device_id", deviceId},
-                                            {"guid", guid},
-                                            {"media_id", mediaId},
-                                            {"caption", caption.Trim()},
-                                            {"device_timestamp", StringUtilities.GenerateTimeStamp()},
-                                            {"source_type", "5"},
-                                            {"filter_type", "0"},
-                                            {"extra", "{}"},
-                                            {"Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"}
-                                        };
-                                        var configureDataString = serializer.Serialize(configureData);
-                                        var configureSignature = GenerateSignature(configureDataString);
-                                        var signedConfigureBody =
-                                            $"signed_body={configureSignature}.{HttpUtility.UrlEncode(configureDataString)}&ig_sig_key_version=4";
-                                        var configureResults = instagramApi.PostData("media/configure/",
-                                            signedConfigureBody, _userAgent);
-                                        if (string.IsNullOrEmpty(configureResults))
-                                        {
-                                            ErrorEvent?.Invoke(this,
-                                                new ErrorResponse
-                                                {
-                                                    Status = "fail",
-                                                    Message =
-                                                        "Empty response received from the server while trying to configure the image"
-                                                });
-                                        }
-                                        else
-                                        {
-                                            try
-                                            {
-                                                var configureJson = JObject.Parse(configureResults);
-                                                var configureStatus = (string) configureJson["status"];
-                                                if (configureStatus.Equals("fail"))
-                                                {
-                                                    ErrorEvent?.Invoke(this,
-                                                        new ErrorResponse
-                                                        {
-                                                            Status = "fail",
-                                                            Message = (string) configureJson["message"]
-                                                        });
-                                                }
-                                                else if (configureStatus.Equals("ok"))
-                                                {
-                                                    var uploadedResponse = new UploadResponse
-                                                    {
-                                                        Images = new List<UploadResponse.InstagramMedia>()
-                                                    };
-                                                    foreach (
-                                                        var media in
-                                                            configureJson["media"]["image_versions2"]["candidates"].Select(
-                                                                x => JObject.Parse(x.ToString()))
-                                                                .Select(mediaJson => new UploadResponse.InstagramMedia
-                                                                {
-                                                                    Url = (string)mediaJson["url"],
-                                                                    Width = (int)mediaJson["width"],
-                                                                    Height = (int)mediaJson["height"]
-                                                                }))
-                                                    {
-                                                        uploadedResponse.Images.Add(media);
-                                                    }
-                                                    OnCompleteEvent?.Invoke(this, uploadedResponse);
-                                                }
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                ErrorEvent?.Invoke(this,
-                                                    new ErrorResponse
-                                                    {
-                                                        Status = "fail",
-                                                        Message = "Could not decode the configure response"
-                                                    });
-                                            }
-                                        }
-                                    }
-                                    else
-                                    {
-                                        ErrorEvent?.Invoke(this,
-                                            new ErrorResponse
-                                            {
-                                                Status = "fail",
-                                                Message =
-                                                    (string) uploadJson["message"]
-                                            });
-                                    }
-                                }
-                                catch (Exception)
-                                {
-                                    ErrorEvent?.Invoke(this,
-                                        new ErrorResponse
-                                        {
-                                            Status = "fail",
-                                            Message = "Could not decode the upload response"
-                                        });
-                                }
-                            }
                         }
-                        else
+                        catch (Exception)
                         {
-                            var message = (string) loginJson["message"];
-                            InvalidLoginEvent?.Invoke(this, new ErrorResponse {Status = status, Message = message});
+                            ErrorEvent?.Invoke(this,
+                                new ErrorResponse
+                                {
+                                    Status = "fail",
+                                    Message = "Could not decode the upload response"
+                                });
                         }
                     }
-                    catch (Exception)
+
+                    else
                     {
-                        ErrorEvent?.Invoke(this,
-                            new ErrorResponse
-                            {
-                                Status = "fail",
-                                Message = "Could not decode the login response"
-                            });
+                        var message = (string) loginJson["message"];
+                        InvalidLoginEvent?.Invoke(this, new ErrorResponse {Status = status, Message = message});
                     }
+                }
+                catch (Exception)
+                {
+                    ErrorEvent?.Invoke(this,
+                        new ErrorResponse
+                        {
+                            Status = "fail",
+                            Message = "Could not decode the login response"
+                        });
                 }
             }
             finally
