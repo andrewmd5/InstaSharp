@@ -32,7 +32,7 @@ namespace InstaSharp
 
 
         private readonly string instagramSignature = "25eace5393646842f0d0c3fb2ac7d3cfa15c052436ee86b5406a8433f54d24a5";
-        private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+        private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer();
 
 
         public InstagramUploader(string username, SecureString password)
@@ -115,7 +115,7 @@ namespace InstaSharp
                     {"password", StringUtilities.SecureStringToString(_password)},
                     {"Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"}
                 };
-                var loginData = serializer.Serialize(data);
+                var loginData = _serializer.Serialize(data);
                 var signature = GenerateSignature(loginData);
                 var signedLoginData =
                     $"signed_body={signature}.{HttpUtility.UrlEncode(loginData)}&ig_sig_key_version=6";
@@ -189,7 +189,7 @@ namespace InstaSharp
                                     {"extra", "{}"},
                                     {"Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"}
                                 };
-                                var configureDataString = serializer.Serialize(configureData);
+                                var configureDataString = _serializer.Serialize(configureData);
                                 var configureSignature = GenerateSignature(configureDataString);
                                 var signedConfigureBody =
                                     $"signed_body={configureSignature}.{HttpUtility.UrlEncode(configureDataString)}&ig_sig_key_version=4";
@@ -219,29 +219,29 @@ namespace InstaSharp
                                                 Status = "fail",
                                                 Message = (string) configureJson["message"]
                                             });
+                                        return;
                                     }
-                                    else if (configureStatus.Equals("ok"))
+
+                                    var uploadedResponse = new UploadResponse
                                     {
-                                        var uploadedResponse = new UploadResponse
-                                        {
-                                            Images = new List<UploadResponse.InstagramMedia>()
-                                        };
-                                        foreach (
-                                            var media in
-                                                configureJson["media"]["image_versions2"]["candidates"].Select(
-                                                    x => JObject.Parse(x.ToString()))
-                                                    .Select(mediaJson => new UploadResponse.InstagramMedia
-                                                    {
-                                                        Url = (string) mediaJson["url"],
-                                                        Width = (int) mediaJson["width"],
-                                                        Height = (int) mediaJson["height"]
-                                                    }))
-                                        {
-                                            uploadedResponse.Images.Add(media);
-                                        }
-                                        OnCompleteEvent?.Invoke(this, uploadedResponse);
+                                        Images = new List<UploadResponse.InstagramMedia>()
+                                    };
+                                    foreach (
+                                        var media in
+                                            configureJson["media"]["image_versions2"]["candidates"].Select(
+                                                x => JObject.Parse(x.ToString()))
+                                                .Select(mediaJson => new UploadResponse.InstagramMedia
+                                                {
+                                                    Url = (string) mediaJson["url"],
+                                                    Width = (int) mediaJson["width"],
+                                                    Height = (int) mediaJson["height"]
+                                                }))
+                                    {
+                                        uploadedResponse.Images.Add(media);
                                     }
+                                    OnCompleteEvent?.Invoke(this, uploadedResponse);
                                 }
+
                                 catch (Exception ex)
                                 {
                                     ErrorEvent?.Invoke(this,
